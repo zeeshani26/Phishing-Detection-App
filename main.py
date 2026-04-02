@@ -7,7 +7,7 @@ import socket
 from email import policy
 from email.parser import BytesParser
 from io import BytesIO
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 import PyPDF2
@@ -31,6 +31,8 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+
+__version__ = "1.0.0"
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -89,58 +91,33 @@ PRIVATE_IP_RANGES = [
 ]
 
 
-def _fetch_available_models() -> Set[str]:
-    """Return the set of model ids that support generateContent."""
-    try:
-        models = genai.list_models()
-    except (google_exceptions.GoogleAPIError, ConnectionError, TimeoutError) as exc:
-        logger.warning(
-            "Unable to list Gemini models via list_models(); continuing with fallbacks. Details: %s",
-            exc,
-        )
-        return set()
-    except Exception as exc:  # pylint: disable=broad-except
-        logger.error(
-            "Unexpected error while listing models: %s",
-            exc,
-            exc_info=True
-        )
-        return set()
-
-    available: Set[str] = set()
-    for entry in models:
-        supported_methods = getattr(entry, "supported_generation_methods", []) or []
-        if "generateContent" in supported_methods:
-            name = getattr(entry, "name", "")
-            if name:
-                available.add(name.split("/")[-1])
-    return available
-
-
 def _resolve_model() -> genai.GenerativeModel:
     """Select the best available Gemini model, trying fallbacks if necessary."""
     preferred_model = os.getenv("GEMINI_MODEL")
-    available_models = _fetch_available_models()
 
+    # Prefer current models first. Older 2.0 Flash IDs are often blocked for new API keys (404).
     candidate_models = [
         preferred_model,
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite",
+        "gemini-2.5-pro",
+        "gemini-1.5-flash",
+        "gemini-1.5-flash-8b",
+        "gemini-1.5-flash-latest",
+        "gemini-1.5-flash-001",
+        "gemini-1.5-pro",
+        "gemini-1.5-pro-latest",
+        "gemini-1.0-pro",
+        "gemini-pro",
+        # Legacy — may return 404 for new users; try only if nothing above works
         "gemini-2.0-flash-exp",
         "gemini-2.0-flash",
         "gemini-2.0-flash-001",
         "gemini-2.0-flash-lite-latest",
-        "gemini-1.5-flash-latest",
-        "gemini-1.5-flash",
-        "gemini-1.5-flash-001",
-        "gemini-1.0-pro",
-        "gemini-pro",
     ]
     errors: list[str] = []
 
     for candidate in filter(None, candidate_models):
-        normalized = candidate.split("/")[-1]
-        if available_models and normalized not in available_models:
-            errors.append(f"{candidate}: not returned by list_models()")
-            continue
         try:
             logger.info("Attempting to initialize Gemini model '%s'", candidate)
             candidate_model = genai.GenerativeModel(candidate)
@@ -166,17 +143,30 @@ def _resolve_model() -> genai.GenerativeModel:
     )
 
 
-try:
-    model = _resolve_model()
-except RuntimeError as err:  # pylint: disable=broad-except
+def _gemini_init_skipped() -> bool:
+    """True when Gemini init is disabled (e.g. CI/tests). Never set in production."""
+    return os.getenv("SKIP_GEMINI_INIT", "").strip().lower() in ("1", "true", "yes")
+
+
+if _gemini_init_skipped():
     model = None
     MODEL_INIT_ERROR = (
-        "Gemini model is unavailable. Update your google-generativeai package "
-        "(`pip install -U google-generativeai`), ensure your API key has access, "
-        "or set GEMINI_MODEL to a supported model (e.g., gemini-1.0-pro). "
-        f"Details: {err}"
+        "Gemini initialization skipped (SKIP_GEMINI_INIT is set). "
+        "Unset this variable in production."
     )
-    logger.error("Gemini model initialization failed: %s", MODEL_INIT_ERROR)
+    logger.warning("%s", MODEL_INIT_ERROR)
+else:
+    try:
+        model = _resolve_model()
+    except RuntimeError as err:  # pylint: disable=broad-except
+        model = None
+        MODEL_INIT_ERROR = (
+            "Gemini model is unavailable. Update your google-generativeai package "
+            "(`pip install -U google-generativeai`), ensure your API key has access, "
+            "or set GEMINI_MODEL to a supported model (e.g., gemini-2.5-flash). "
+            f"Details: {err}"
+        )
+        logger.error("Gemini model initialization failed: %s", MODEL_INIT_ERROR)
 
 
 def render_index(**context):
@@ -504,9 +494,25 @@ def _is_private_ip(hostname: str) -> bool:
             if ip_obj in private_range:
                 return True
         return False
-    except (socket.gaierror, ValueError):
-        # If resolution fails, be conservative and block
+    except (OSError, ValueError):
+        # DNS / resolution failures (incl. socket.gaierror) — block conservatively
         return True
+
+
+def normalize_url_input(raw: str) -> str:
+    """
+    Turn bare domains (e.g. example.com, www.example.com/path) into https URLs
+    so users are not required to type a scheme. Protocol-relative // URLs become https.
+    """
+    s = raw.strip()
+    if not s:
+        return s
+    lower = s.lower()
+    if lower.startswith("http://") or lower.startswith("https://"):
+        return s
+    if lower.startswith("//"):
+        return "https:" + s
+    return "https://" + s
 
 
 def is_valid_url(url: str) -> bool:
@@ -553,6 +559,7 @@ def health():
     """Health check endpoint for monitoring and load balancers."""
     return jsonify({
         "status": "healthy",
+        "version": __version__,
         "model_available": model is not None,
         "model_error": MODEL_INIT_ERROR if not model else None
     }), 200
@@ -592,7 +599,8 @@ def detect_scam():
 @limiter.limit("20 per minute")  # Rate limit: 20 URL analyses per minute
 def predict_url():
     """Analyze URL for phishing/malware threats."""
-    url = request.form.get("url", "").strip()
+    raw_url = request.form.get("url", "").strip()
+    url = normalize_url_input(raw_url)
 
     if not url:
         return render_index(url_message="Please provide a URL to classify.")
@@ -601,14 +609,14 @@ def predict_url():
     if len(url) > MAX_URL_LENGTH:
         return render_index(
             url_message=f"URL is too long. Maximum length is {MAX_URL_LENGTH:,} characters.",
-            input_url=url
+            input_url=raw_url
         )
 
     if not is_valid_url(url):
         return render_index(
-            url_message="Invalid URL format or security risk detected. "
-            "URLs must use http:// or https:// and cannot point to localhost or private networks.",
-            input_url=url
+            url_message="Invalid URL or security risk. Use a public website (http(s):// or just "
+            "example.com). Localhost and private network addresses are not allowed.",
+            input_url=raw_url
         )
 
     classification = url_detection(url)

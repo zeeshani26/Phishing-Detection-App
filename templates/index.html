@@ -662,7 +662,7 @@
                 <p>Interrogate any hyperlink with adaptive phishing telemetry and isolate the threat classification instantly.</p>
                 <form method="post" action="/predict" onsubmit="showSpinner('urlSpinner')">
                     <label for="url">Enter a target URL</label>
-                    <input type="text" name="url" id="url" placeholder="https://domain.example" value="{{ input_url or '' }}" required>
+                    <input type="text" name="url" id="url" placeholder="example.com or https://example.com/path" value="{{ input_url or '' }}" required>
                     <button type="submit">
                         <span class="pulse"></span>
                         Classify Vector

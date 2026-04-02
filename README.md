@@ -48,7 +48,7 @@ A modern web application that uses Google's Gemini AI to detect phishing emails 
    ```
 
 4. **Configure environment variables**:
-   Create a `.env` file:
+   Copy `.env.example` to `.env` and set your API key:
    ```
    GOOGLE_API_KEY=your-actual-api-key-here
    FLASK_DEBUG=false
@@ -60,6 +60,17 @@ A modern web application that uses Google's Gemini AI to detect phishing emails 
    ```
    Open `http://127.0.0.1:5000` in your browser.
 
+### Tests and CI
+
+Automated tests run without calling Gemini: set `SKIP_GEMINI_INIT=1` (see `tests/conftest.py`). For local runs:
+
+```bash
+pip install -r requirements.txt -r requirements-dev.txt
+python -m pytest tests/ -v
+```
+
+GitHub Actions (`.github/workflows/ci.yml`) runs the same suite on Python 3.11 and 3.12.
+
 ## 📖 Usage
 
 ### Analyzing Files
@@ -70,7 +81,7 @@ A modern web application that uses Google's Gemini AI to detect phishing emails 
 
 ### Analyzing URLs
 1. Click "Quantum URL Firewall"
-2. Enter a URL (must include `http://` or `https://`)
+2. Enter a URL (`https://…` / `http://…`, or a bare domain like `example.com` — `https://` is added automatically)
 3. Click "Classify Vector"
 4. Review the threat analysis
 
@@ -85,6 +96,7 @@ A modern web application that uses Google's Gemini AI to detect phishing emails 
 | `FLASK_DEBUG` | No | Debug mode (default: `false`) |
 | `PORT` | No | Port number (default: `5000`) |
 | `LOG_LEVEL` | No | Logging level: DEBUG, INFO, WARNING, ERROR (default: `INFO`) |
+| `SKIP_GEMINI_INIT` | No | If `true`/`1`, skips Gemini at startup (tests/CI only; **do not** use in production) |
 
 ### Model Selection
 
@@ -119,12 +131,16 @@ The application can be deployed on any platform that supports Python and WSGI (H
 
 ```
 Phishing-Detection-App/
-├── main.py              # Main Flask application
-├── requirements.txt     # Python dependencies
-├── Procfile             # Deployment configuration
-├── templates/
-│   └── index.html      # Web UI template
-└── README.md           # This file
+├── main.py                 # Flask application
+├── requirements.txt      # Runtime dependencies
+├── requirements-dev.txt  # Pytest (development/CI)
+├── pytest.ini
+├── .env.example          # Template for environment variables
+├── Procfile              # Deployment (e.g. Render)
+├── .github/workflows/    # CI pipeline
+├── tests/                # Unit and smoke tests
+└── templates/
+    └── index.html
 ```
 
 ## 🐛 Troubleshooting
@@ -138,7 +154,7 @@ Phishing-Detection-App/
 - Supported formats: PDF, TXT, DOCX, EML
 
 ### URL Analysis Issues
-- URLs must include `http://` or `https://`
+- URLs may be bare domains (e.g. `example.com`) or full `http://` / `https://` links; localhost and private networks are blocked
 - Localhost and private IPs are blocked for security
 
 ## 📝 License
